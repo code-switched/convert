@@ -3,6 +3,12 @@
 # Image to Markdown Converter using Gemini 2.5 Flash
 # Based on examples from context.md
 
+# Common logging (console + optional file)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/log.sh"
+LOG_FILE="${SCRIPT_DIR}/logs/convert_images_to_markdown.log"
+LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
+
 # Accept optional paths as arguments
 PATHS=("$@")
 
@@ -26,12 +32,6 @@ fi
 # Base URLs for Gemini API
 BASE_URL="https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta"
-
-# Common logging (console + optional file)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../common/log.sh"
-LOG_FILE="${SCRIPT_DIR}/logs/convert_images_to_markdown.log"
-LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
 
 # Function to convert Image to markdown using inline data (for smaller files)
 convert_image_inline() {
