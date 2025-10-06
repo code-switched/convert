@@ -7,7 +7,7 @@ param (
 
 # Import logging module
 $moduleDir = Join-Path $PSScriptRoot "..\common"
-Import-Module (Join-Path $moduleDir "Write-JointJournalLog.psm1") -Force
+Import-Module (Join-Path $moduleDir "Write-Log.psm1") -Force
 
 # Initialize logging
 Initialize-Logging $PSCommandPath

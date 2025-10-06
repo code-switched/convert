@@ -1,5 +1,4 @@
 # PDF to Markdown Converter using Gemini 2.5 Flash
-# Based on examples from context.md
 
 param (
     [Parameter()]
