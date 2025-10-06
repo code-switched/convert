@@ -23,14 +23,16 @@ fi
 #     [".heif"]="image/heif"
 # )
 
-# Base URL for Gemini API
+# Base URLs for Gemini API
 BASE_URL="https://generativelanguage.googleapis.com/v1beta"
+UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta"
 
 # Function to convert Image to markdown using inline data (for smaller files)
 convert_image_inline() {
     local image_path="$1"
     local output_path="$2"
-    local display_name=$(basename "$image_path" .png)
+    local display_name=$(basename "$image_path")
+    display_name="${display_name%.*}"
     
     echo "Converting $image_path to markdown using inline method..."
     
@@ -82,14 +84,14 @@ convert_image_file_api() {
     tmp_header_file=upload-header.tmp
     
     # Initial resumable request defining metadata
-    curl "${BASE_URL}/upload/v1beta/files?key=${GOOGLE_GENAI_API_KEY}" \
+    curl "${UPLOAD_BASE_URL}/files?key=${GOOGLE_GENAI_API_KEY}" \
     -D upload-header.tmp \
     -H "X-Goog-Upload-Protocol: resumable" \
     -H "X-Goog-Upload-Command: start" \
     -H "X-Goog-Upload-Header-Content-Length: ${NUM_BYTES}" \
     -H "X-Goog-Upload-Header-Content-Type: $(get_mime_type "$image_path")" \
     -H "Content-Type: application/json" \
-    -d "{'file': {'display_name': '${display_name}'}}" 2> /dev/null
+    -d "{\"file\": {\"display_name\": \"${display_name}\"}}" 2> /dev/null
     
     upload_url=$(grep -i "x-goog-upload-url: " "${tmp_header_file}" | cut -d" " -f2 | tr -d "\r")
     rm "${tmp_header_file}"
