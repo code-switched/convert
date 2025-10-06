@@ -29,18 +29,29 @@ log() {
     return 0
   fi
 
+  # Determine whether to use colors
+  local use_color="false"
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    use_color="true"
+  fi
+
   local color reset
-  reset='\e[0m'
-  case "$level" in
-    ERROR) color='\e[31m' ;;
-    WARN)  color='\e[33m' ;;
-    INFO)  color='\e[36m' ;;
-    DEBUG) color='\e[90m' ;;
-    *)     color='\e[0m'  ;;
-  esac
+  if [ "$use_color" = "true" ]; then
+    reset='\033[0m'
+    case "$level" in
+      ERROR) color='\033[31m' ;;
+      WARN)  color='\033[33m' ;;
+      INFO)  color='\033[36m' ;;
+      DEBUG) color='\033[90m' ;;
+      *)     color='\033[0m'  ;;
+    esac
+  else
+    color=''
+    reset=''
+  fi
 
   # Console
-  echo -e "${color}${msg}${reset}"
+  printf "%b\n" "${color}${msg}${reset}"
 
   # File
   if [ -n "${LOG_FILE:-}" ]; then
