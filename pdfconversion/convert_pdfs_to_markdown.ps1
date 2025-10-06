@@ -5,10 +5,17 @@ param (
     [string[]]$Paths
 )
 
+# Import logging module
+$moduleDir = Join-Path $PSScriptRoot "..\common"
+Import-Module (Join-Path $moduleDir "Write-Log.psm1") -Force
+
+# Initialize logging
+Initialize-Logging $PSCommandPath
+
 # Check if GOOGLE_GENAI_API_KEY environment variable is set
 if (-not $env:GOOGLE_GENAI_API_KEY) {
-    Write-Host "Error: GOOGLE_GENAI_API_KEY environment variable is not set" -ForegroundColor Red
-    Write-Host "Please set it with: `$env:GOOGLE_GENAI_API_KEY = 'your_api_key_here'" -ForegroundColor Yellow
+    Write-Log "GOOGLE_GENAI_API_KEY environment variable is not set" -Level ERROR
+    Write-Log "Please set it with: `$env:GOOGLE_GENAI_API_KEY = 'your_api_key_here'" -Level WARN
     exit 1
 }
 
@@ -22,7 +29,7 @@ function Convert-PdfInline {
         [string]$OutputPath
     )
 
-    Write-Host "Converting $PdfPath to markdown using inline method..." -ForegroundColor Blue
+    Write-Log "Converting $PdfPath to markdown using inline method..." -Level INFO
 
     # Base64 encode the PDF
     $pdfBytes = [System.IO.File]::ReadAllBytes($PdfPath)
@@ -61,14 +68,14 @@ function Convert-PdfInline {
         if ($response.candidates -and $response.candidates[0].content.parts -and $response.candidates[0].content.parts[0].text) {
             $markdownContent = $response.candidates[0].content.parts[0].text
             [System.IO.File]::WriteAllText($OutputPath, $markdownContent, [System.Text.Encoding]::UTF8)
-            Write-Host "SUCCESS: Converted $PdfPath to $OutputPath" -ForegroundColor Green
+            Write-Log "Successfully converted '$PdfPath' to '$OutputPath'" -Level INFO
         } else {
-            Write-Host "FAILED: Could not convert $PdfPath" -ForegroundColor Red
-            Write-Host "Response: $($response | ConvertTo-Json -Depth 5)" -ForegroundColor Yellow
+            Write-Log "Failed to convert '$PdfPath'" -Level ERROR
+            Write-Log "API Response: $($response | ConvertTo-Json -Depth 5)" -Level DEBUG
         }
     }
     catch {
-        Write-Host "ERROR: Converting ${PdfPath}: $_" -ForegroundColor Red
+        Write-Log "Error converting '$PdfPath': $_" -Level ERROR
     }
 }
 
@@ -80,7 +87,7 @@ function Convert-PdfFileApi {
     )
 
     $displayName = [System.IO.Path]::GetFileNameWithoutExtension($PdfPath)
-    Write-Host "Converting $PdfPath to markdown using File API..." -ForegroundColor Blue
+    Write-Log "Converting $PdfPath to markdown using File API..." -Level INFO
 
     $fileInfo = Get-Item $PdfPath
     $numBytes = $fileInfo.Length
@@ -123,7 +130,7 @@ function Convert-PdfFileApi {
             -Body $fileBytes
 
         $fileUri = $fileResponse.file.uri
-        Write-Host "File uploaded with URI: $fileUri" -ForegroundColor Cyan
+        Write-Log "File uploaded with URI: $fileUri" -Level INFO
 
         # Create the prompt text (escaped properly)
         $promptText = "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings, lists, code blocks if any, and emphasis. Make sure the output is readable and well-organized."
@@ -156,14 +163,14 @@ function Convert-PdfFileApi {
         if ($response.candidates -and $response.candidates[0].content.parts -and $response.candidates[0].content.parts[0].text) {
             $markdownContent = $response.candidates[0].content.parts[0].text
             [System.IO.File]::WriteAllText($OutputPath, $markdownContent, [System.Text.Encoding]::UTF8)
-            Write-Host "SUCCESS: Converted $PdfPath to $OutputPath" -ForegroundColor Green
+            Write-Log "Successfully converted '$PdfPath' to '$OutputPath'" -Level INFO
         } else {
-            Write-Host "FAILED: Could not convert $PdfPath" -ForegroundColor Red
-            Write-Host "Response: $($response | ConvertTo-Json -Depth 5)" -ForegroundColor Yellow
+            Write-Log "Failed to convert '$PdfPath'" -Level ERROR
+            Write-Log "API Response: $($response | ConvertTo-Json -Depth 5)" -Level DEBUG
         }
     }
     catch {
-        Write-Host "ERROR: Converting ${PdfPath}: $_" -ForegroundColor Red
+        Write-Log "Error converting '$PdfPath': $_" -Level ERROR
     }
 }
 
@@ -183,7 +190,7 @@ function Convert-Pdf {
 
     # Check if markdown already exists
     if (Test-MarkdownExists $PdfPath) {
-        Write-Host "SKIPPING: $PdfPath - markdown file already exists" -ForegroundColor Yellow
+        Write-Log "SKIPPING: $PdfPath - markdown file already exists" -Level WARN
         return
     }
 
@@ -205,14 +212,14 @@ function Convert-Pdf {
 function Convert-Directory {
     param([string]$DirPath)
     
-    Write-Host "Processing directory: $DirPath" -ForegroundColor Cyan
+    Write-Log "Processing directory: $DirPath" -Level INFO
     Get-ChildItem "$DirPath\*.pdf" -Recurse | ForEach-Object {
         Convert-Pdf -PdfPath $_.FullName
     }
 }
 
 # Main execution
-Write-Host "Finding PDF files to convert..." -ForegroundColor Cyan
+Write-Log "Finding PDF files to convert..." -Level INFO
 
 if ($Paths) {
     foreach ($path in $Paths) {
@@ -227,20 +234,20 @@ if ($Paths) {
                 Convert-Pdf -PdfPath $item.FullName
             }
             else {
-                Write-Host "SKIPPING: $path - not a PDF file or directory" -ForegroundColor Yellow
+                Write-Log "SKIPPING: $path - not a PDF file or directory" -Level WARN
             }
         }
         else {
-            Write-Host "SKIPPING: $path - path does not exist" -ForegroundColor Red
+            Write-Log "SKIPPING: $path - path does not exist" -Level ERROR
         }
     }
 }
 else {
     # Default behavior - scan all directories in root
-    Write-Host "No paths specified. Scanning all directories in repository root..." -ForegroundColor Cyan
+    Write-Log "No paths specified. Scanning all directories in repository root..." -Level INFO
     Get-ChildItem -Directory | ForEach-Object {
         Convert-Directory $_.FullName
     }
 }
 
-Write-Host "PDF to Markdown conversion complete!" -ForegroundColor Green 
+Write-Log "PDF to Markdown conversion complete!" -Level INFO 
