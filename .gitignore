@@ -1,6 +1,6 @@
 # Custom Folders
 /.refs
-/logs
+logs/
 
 # Custom Extensions
 *.log.*
