@@ -8,21 +8,29 @@ PATHS=("$@")
 
 # Check if GOOGLE_GENAI_API_KEY is set
 if [ -z "$GOOGLE_GENAI_API_KEY" ]; then
-    echo "Error: GOOGLE_GENAI_API_KEY environment variable is not set"
-    echo "Please set it with: export GOOGLE_GENAI_API_KEY=your_api_key_here"
+    log ERROR "GOOGLE_GENAI_API_KEY environment variable is not set"
+    log WARN "Please set it with: export GOOGLE_GENAI_API_KEY=your_api_key_here"
     exit 1
 fi
 
-# Base URL for Gemini API
+# Base URLs for Gemini API
 BASE_URL="https://generativelanguage.googleapis.com/v1beta"
+UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta"
+
+# Common logging (console + optional file)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/log.sh"
+LOG_FILE="${SCRIPT_DIR}/logs/convert_pdfs_to_markdown.log"
+LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
 
 # Function to convert PDF to markdown using inline data (for smaller files)
 convert_pdf_inline() {
     local pdf_path="$1"
     local output_path="$2"
-    local display_name=$(basename "$pdf_path" .pdf)
+    local display_name=$(basename "$pdf_path")
+    display_name="${display_name%.*}"
     
-    echo "Converting $pdf_path to markdown using inline method..."
+    log INFO "Converting $pdf_path to markdown using inline method..."
     
     # Check for FreeBSD base64 and set flags accordingly
     if [[ "$(base64 --version 2>&1)" = *"FreeBSD"* ]]; then
@@ -47,13 +55,13 @@ convert_pdf_inline() {
         }]
         }' 2> /dev/null > temp_response.json
     
-    # Extract the markdown content and save to file
+    # Extract and save the markdown content
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
         jq -r '.candidates[0].content.parts[0].text' temp_response.json > "$output_path"
-        echo "SUCCESS: Converted $pdf_path to $output_path"
+        log INFO "Successfully converted '$pdf_path' to '$output_path'"
     else
-        echo "FAILED: Could not convert $pdf_path"
-        echo "Response:" $(cat temp_response.json)
+        log ERROR "Failed to convert '$pdf_path'"
+        log DEBUG "API Response: $(cat temp_response.json)"
     fi
     
     # Clean up
@@ -64,22 +72,23 @@ convert_pdf_inline() {
 convert_pdf_file_api() {
     local pdf_path="$1"
     local output_path="$2"
-    local display_name=$(basename "$pdf_path" .pdf)
+    local display_name=$(basename "$pdf_path")
+    display_name="${display_name%.*}"
     
-    echo "Converting $pdf_path to markdown using File API..."
+    log INFO "Converting $pdf_path to markdown using File API..."
     
     NUM_BYTES=$(wc -c < "$pdf_path")
     tmp_header_file=upload-header.tmp
     
     # Initial resumable request defining metadata
-    curl "${BASE_URL}/upload/v1beta/files?key=${GOOGLE_GENAI_API_KEY}" \
+    curl "${UPLOAD_BASE_URL}/files?key=${GOOGLE_GENAI_API_KEY}" \
     -D upload-header.tmp \
     -H "X-Goog-Upload-Protocol: resumable" \
     -H "X-Goog-Upload-Command: start" \
     -H "X-Goog-Upload-Header-Content-Length: ${NUM_BYTES}" \
     -H "X-Goog-Upload-Header-Content-Type: application/pdf" \
     -H "Content-Type: application/json" \
-    -d "{'file': {'display_name': '${display_name}'}}" 2> /dev/null
+    -d "{\"file\": {\"display_name\": \"${display_name}\"}}" 2> /dev/null
     
     upload_url=$(grep -i "x-goog-upload-url: " "${tmp_header_file}" | cut -d" " -f2 | tr -d "\r")
     rm "${tmp_header_file}"
@@ -92,9 +101,9 @@ convert_pdf_file_api() {
     --data-binary "@${pdf_path}" 2> /dev/null > file_info.json
     
     file_uri=$(jq -r ".file.uri" file_info.json)
-    echo "File uploaded with URI: $file_uri"
+    log INFO "File uploaded with URI: $file_uri"
     
-    # Generate content using that file
+    # Generate content using the uploaded file
     curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
         -H 'Content-Type: application/json' \
         -X POST \
@@ -102,17 +111,17 @@ convert_pdf_file_api() {
         "contents": [{
             "parts":[
             {"text": "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."},
-            {"file_data":{"mime_type": "application/pdf", "file_uri": '$file_uri'}}]
+            {"file_data":{"mime_type": "application/pdf", "file_uri": "'$file_uri'"}}]
             }]
         }' 2> /dev/null > temp_response.json
     
-    # Extract the markdown content and save to file
+    # Extract and save the markdown content
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
         jq -r '.candidates[0].content.parts[0].text' temp_response.json > "$output_path"
-        echo "SUCCESS: Converted $pdf_path to $output_path"
+        log INFO "Successfully converted '$pdf_path' to '$output_path'"
     else
-        echo "FAILED: Could not convert $pdf_path"
-        echo "Response:" $(cat temp_response.json)
+        log ERROR "Failed to convert '$pdf_path'"
+        log DEBUG "API Response: $(cat temp_response.json)"
     fi
     
     # Clean up
@@ -143,13 +152,21 @@ convert_pdf() {
     
     # Check if markdown already exists
     if has_markdown_equivalent "$pdf_path"; then
-        echo "SKIPPING: $pdf_path - markdown file already exists"
+        log WARN "SKIPPING: $pdf_path - markdown file already exists"
         return
     fi
     
     # Check file size to determine method
     file_size=$(get_file_size "$pdf_path")
-    max_inline_size=$((15 * 1024 * 1024))  # 15MB to be safe
+    # Configurable inline size threshold (default 15MB)
+    if [ -n "$PDF_MD_MAX_INLINE_BYTES" ]; then
+        max_inline_size="$PDF_MD_MAX_INLINE_BYTES"
+    elif [ -n "$PDF_MD_MAX_INLINE_MB" ]; then
+        max_inline_size=$((PDF_MD_MAX_INLINE_MB * 1024 * 1024))
+    else
+        max_inline_size=$((15 * 1024 * 1024))
+    fi
+    log DEBUG "File size: ${file_size} bytes; inline threshold: ${max_inline_size} bytes"
     
     if [ "$file_size" -lt "$max_inline_size" ]; then
         convert_pdf_inline "$pdf_path" "$md_path"
@@ -164,14 +181,14 @@ convert_pdf() {
 # Function to process a directory
 process_directory() {
     local dir_path="$1"
-    echo "Processing directory: $dir_path"
+    log INFO "Processing directory: $dir_path"
     find "$dir_path" -type f -name "*.pdf" -print0 | while IFS= read -r -d '' pdf; do
         convert_pdf "$pdf"
     done
 }
 
 # Main execution
-echo "Finding PDF files to convert..."
+log INFO "Finding PDF files to convert..."
 
 if [ ${#PATHS[@]} -gt 0 ]; then
     # Process specified paths
@@ -184,15 +201,15 @@ if [ ${#PATHS[@]} -gt 0 ]; then
                 # If path is a PDF file, process it
                 convert_pdf "$path"
             else
-                echo "SKIPPING: $path - not a PDF file or directory"
+                log WARN "SKIPPING: $path - not a PDF file or directory"
             fi
         else
-            echo "SKIPPING: $path - path does not exist"
+            log ERROR "SKIPPING: $path - path does not exist"
         fi
     done
 else
     # Default behavior - scan all directories in root
-    echo "No paths specified. Scanning all directories in repository root..."
+    log INFO "No paths specified. Scanning all directories in repository root..."
     for dir in */; do
         if [ -d "$dir" ]; then
             process_directory "${dir%/}"
@@ -200,4 +217,4 @@ else
     done
 fi
 
-echo "PDF to Markdown conversion complete!" 
+log INFO "PDF to Markdown conversion complete!" 
