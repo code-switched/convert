@@ -44,9 +44,8 @@ function Initialize-Logging {
         throw "Could not determine script directory from path: $ScriptPath"
     }
 
-    # Set up log file path in the tools/logs directory
-    $toolsDir = Split-Path $scriptDir -Parent
-    $logsDir = Join-Path $toolsDir "logs"
+    # Set up log file path in the tool's own logs directory (sibling of the script)
+    $logsDir = Join-Path $scriptDir "logs"
     $logFileName = [System.IO.Path]::GetFileNameWithoutExtension($ScriptPath) + ".log"
     $script:LogFile = Join-Path $logsDir $logFileName
     $logDir = $logsDir
