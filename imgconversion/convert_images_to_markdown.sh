@@ -8,8 +8,8 @@ PATHS=("$@")
 
 # Check if GOOGLE_GENAI_API_KEY is set
 if [ -z "$GOOGLE_GENAI_API_KEY" ]; then
-    echo "Error: GOOGLE_GENAI_API_KEY environment variable is not set"
-    echo "Please set it with: export GOOGLE_GENAI_API_KEY=your_api_key_here"
+    log ERROR "GOOGLE_GENAI_API_KEY environment variable is not set"
+    log WARN "Please set it with: export GOOGLE_GENAI_API_KEY=your_api_key_here"
     exit 1
 fi
 
@@ -27,6 +27,12 @@ fi
 BASE_URL="https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta"
 
+# Common logging (console + optional file)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/log.sh"
+LOG_FILE="${SCRIPT_DIR}/logs/convert_images_to_markdown.log"
+LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
+
 # Function to convert Image to markdown using inline data (for smaller files)
 convert_image_inline() {
     local image_path="$1"
@@ -34,7 +40,7 @@ convert_image_inline() {
     local display_name=$(basename "$image_path")
     display_name="${display_name%.*}"
     
-    echo "Converting $image_path to markdown using inline method..."
+    log INFO "Converting $image_path to markdown using inline method..."
     
     # Check for FreeBSD base64 and set flags accordingly
     if [[ "$(base64 --version 2>&1)" = *"FreeBSD"* ]]; then
@@ -62,10 +68,10 @@ convert_image_inline() {
     # Extract the markdown content and save to file
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
         jq -r '.candidates[0].content.parts[0].text' temp_response.json > "$output_path"
-        echo "SUCCESS: Converted $image_path to $output_path"
+        log INFO "Successfully converted '$image_path' to '$output_path'"
     else
-        echo "FAILED: Could not convert $image_path"
-        echo "Response:" $(cat temp_response.json)
+        log ERROR "Failed to convert '$image_path'"
+        log DEBUG "API Response: $(cat temp_response.json)"
     fi
     
     # Clean up
@@ -76,9 +82,10 @@ convert_image_inline() {
 convert_image_file_api() {
     local image_path="$1"
     local output_path="$2"
-    local display_name=$(basename "$image_path" .png)
+    local display_name=$(basename "$image_path")
+    display_name="${display_name%.*}"
     
-    echo "Converting $image_path to markdown using File API..."
+    log INFO "Converting $image_path to markdown using File API..."
     
     NUM_BYTES=$(wc -c < "$image_path")
     tmp_header_file=upload-header.tmp
@@ -104,7 +111,7 @@ convert_image_file_api() {
     --data-binary "@${image_path}" 2> /dev/null > file_info.json
     
     file_uri=$(jq -r ".file.uri" file_info.json)
-    echo "File uploaded with URI: $file_uri"
+    log INFO "File uploaded with URI: $file_uri"
     
     # Generate content using that file
     curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
@@ -121,10 +128,10 @@ convert_image_file_api() {
     # Extract the markdown content and save to file
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
         jq -r '.candidates[0].content.parts[0].text' temp_response.json > "$output_path"
-        echo "SUCCESS: Converted $image_path to $output_path"
+        log INFO "Successfully converted '$image_path' to '$output_path'"
     else
-        echo "FAILED: Could not convert $image_path"
-        echo "Response:" $(cat temp_response.json)
+        log ERROR "Failed to convert '$image_path'"
+        log DEBUG "API Response: $(cat temp_response.json)"
     fi
     
     # Clean up
@@ -175,13 +182,20 @@ convert_image() {
     
     # Check if markdown already exists
     if has_markdown_equivalent "$image_path"; then
-        echo "SKIPPING: $image_path - markdown file already exists"
+        log WARN "SKIPPING: $image_path - markdown file already exists"
         return
     fi
     
     # Check file size to determine method
     file_size=$(get_file_size "$image_path")
-    max_inline_size=$((3 * 1024 * 1024))  # 3MB threshold
+    if [ -n "$IMG_MD_MAX_INLINE_BYTES" ]; then
+        max_inline_size="$IMG_MD_MAX_INLINE_BYTES"
+    elif [ -n "$IMG_MD_MAX_INLINE_MB" ]; then
+        max_inline_size=$((IMG_MD_MAX_INLINE_MB * 1024 * 1024))
+    else
+        max_inline_size=$((3 * 1024 * 1024))
+    fi
+    log DEBUG "File size: ${file_size} bytes; inline threshold: ${max_inline_size} bytes"
     
     if [ "$file_size" -lt "$max_inline_size" ]; then
         convert_image_inline "$image_path" "$md_path"
@@ -196,7 +210,7 @@ convert_image() {
 # Function to process a directory
 process_directory() {
     local dir_path="$1"
-    echo "Processing directory: $dir_path"
+    log INFO "Processing directory: $dir_path"
     
     # Create pattern for find command from supported extensions
     local pattern=""
@@ -211,7 +225,7 @@ process_directory() {
 }
 
 # Main execution
-echo "Finding image files to convert..."
+log INFO "Finding image files to convert..."
 
 if [ ${#PATHS[@]} -gt 0 ]; then
     # Process specified paths
@@ -226,18 +240,18 @@ if [ ${#PATHS[@]} -gt 0 ]; then
                     # If path is a supported image file, process it
                     convert_image "$path"
                 else
-                    echo "SKIPPING: $path - not a supported image file. Supported formats: png, jpg, jpeg, webp, heic, heif"
+                    log WARN "SKIPPING: $path - not a supported image file. Supported formats: png, jpg, jpeg, webp, heic, heif"
                 fi
             else
-                echo "SKIPPING: $path - not a supported image file or directory"
+                log WARN "SKIPPING: $path - not a supported image file or directory"
             fi
         else
-            echo "SKIPPING: $path - path does not exist"
+            log ERROR "SKIPPING: $path - path does not exist"
         fi
     done
 else
     # Default behavior - scan all directories in root
-    echo "No paths specified. Scanning all directories in repository root..."
+    log INFO "No paths specified. Scanning all directories in repository root..."
     for dir in */; do
         if [ -d "$dir" ]; then
             process_directory "${dir%/}"
@@ -245,4 +259,4 @@ else
     done
 fi
 
-echo "Image to Markdown conversion complete!"
+log INFO "Image to Markdown conversion complete!"
