@@ -1,0 +1,9 @@
+# Custom Folders
+/.refs
+/logs
+
+# Custom Extensions
+*.log.*
+
+# Custom Files
+.DS_Store
