@@ -108,7 +108,7 @@ function Convert-PdfFileApi {
             }
         } | ConvertTo-Json -Depth 5
 
-        $uploadResponse = Invoke-WebRequest -Uri "$BASE_URL/upload/v1beta/files?key=$env:GOOGLE_GENAI_API_KEY" `
+        $uploadResponse = Invoke-WebRequest -Uri "https://generativelanguage.googleapis.com/upload/v1beta/files?key=$env:GOOGLE_GENAI_API_KEY" `
             -Method Post `
             -Headers $uploadHeaders `
             -Body $uploadBody
