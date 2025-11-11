@@ -29,31 +29,45 @@ convert_pdf_inline() {
     local output_path="$2"
     local display_name=$(basename "$pdf_path")
     display_name="${display_name%.*}"
+    local payload_file prompt_text
+    payload_file=$(mktemp "${SCRIPT_DIR}/payload.XXXXXX.json")
+    prompt_text="Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."
     
     log INFO "Converting $pdf_path to markdown using inline method..."
     
-    # Check for FreeBSD base64 and set flags accordingly
-    if [[ "$(base64 --version 2>&1)" = *"FreeBSD"* ]]; then
-        B64FLAGS="--input"
+    # Build the inline JSON payload without hitting shell argument limits
+    local base64_cmd newline_filter
+    if base64 --help 2>&1 | grep -q "\-w, --wrap"; then
+        base64_cmd=(base64 -w0 "$pdf_path")
+        newline_filter=(cat)
+    elif [[ "$(base64 --version 2>&1)" = *"FreeBSD"* ]]; then
+        base64_cmd=(base64 --input "$pdf_path")
+        newline_filter=(tr -d '\n')
     else
-        B64FLAGS="-w0"
+        base64_cmd=(base64 "$pdf_path")
+        newline_filter=(tr -d '\n')
     fi
     
-    # Base64 encode the PDF
-    ENCODED_PDF=$(base64 $B64FLAGS "$pdf_path")
+    if ! "${base64_cmd[@]}" | "${newline_filter[@]}" \
+        | jq -Rs --arg prompt "$prompt_text" '{
+            contents: [{
+                parts: [
+                    { inline_data: { mime_type: "application/pdf", data: . } },
+                    { text: $prompt }
+                ]
+            }]
+        }' > "$payload_file"; then
+        log ERROR "Failed to build inline payload for $pdf_path"
+        rm -f "$payload_file"
+        return
+    fi
     
     # Generate content using the base64 encoded PDF
     curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
         -H 'Content-Type: application/json' \
         -X POST \
-        -d '{
-        "contents": [{
-            "parts":[
-            {"inline_data": {"mime_type": "application/pdf", "data": "'"$ENCODED_PDF"'"}},
-            {"text": "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."}
-            ]
-        }]
-        }' 2> /dev/null > temp_response.json
+        --data-binary @"$payload_file" \
+        2> /dev/null > temp_response.json
     
     # Extract and save the markdown content
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
@@ -65,7 +79,7 @@ convert_pdf_inline() {
     fi
     
     # Clean up
-    rm -f temp_response.json
+    rm -f temp_response.json "$payload_file"
 }
 
 # Function to convert PDF using File API (for larger files)
