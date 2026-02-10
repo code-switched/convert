@@ -42,28 +42,41 @@ convert_image_inline() {
     
     log INFO "Converting $image_path to markdown using inline method..."
     
-    # Check for FreeBSD base64 and set flags accordingly
+    local payload_file prompt_text newline_filter base64_cmd
+    payload_file=$(mktemp "${SCRIPT_DIR}/payload.XXXXXX.json")
+    prompt_text="Please convert this image to clean, well-formatted markdown. If the image contains text, transcribe it accurately. If it contains structured information like lists, tables, or code, preserve the structure. For diagrams or user interfaces, describe them in detail. Ensure the final markdown is readable and well-organized."
+
     if [[ "$(base64 --version 2>&1)" = *"FreeBSD"* ]]; then
-        B64FLAGS="--input"
+        base64_cmd=(base64 --input "$image_path")
+        newline_filter=(tr -d '\n')
+    elif base64 --help 2>&1 | grep -q "\-w, --wrap"; then
+        base64_cmd=(base64 -w0 "$image_path")
+        newline_filter=(cat)
     else
-        B64FLAGS="-w0"
+        base64_cmd=(base64 "$image_path")
+        newline_filter=(tr -d '\n')
     fi
-    
-    # Base64 encode the Image
-    ENCODED_IMAGE=$(base64 $B64FLAGS "$image_path")
-    
+
+    if ! "${base64_cmd[@]}" | "${newline_filter[@]}" \
+        | jq -Rs --arg prompt "$prompt_text" --arg mime "$(get_mime_type "$image_path")" '{
+            contents: [{
+                parts: [
+                    { inline_data: { mime_type: $mime, data: . } },
+                    { text: $prompt }
+                ]
+            }]
+        }' > "$payload_file"; then
+        log ERROR "Failed to build inline payload for $image_path"
+        rm -f "$payload_file"
+        return
+    fi
+
     # Generate content using the base64 encoded image
-    curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
+    curl "${BASE_URL}/models/gemini-3-flash-preview:generateContent?key=$GOOGLE_GENAI_API_KEY" \
         -H 'Content-Type: application/json' \
         -X POST \
-        -d '{
-        "contents": [{
-            "parts":[
-            {"inline_data": {"mime_type": "'$(get_mime_type "$image_path")'", "data": "'"$ENCODED_IMAGE"'"}},
-            {"text": "Please convert this image to clean, well-formatted markdown. If the image contains text, transcribe it accurately. If it contains structured information like lists, tables, or code, preserve the structure. For diagrams or user interfaces, describe them in detail. Ensure the final markdown is readable and well-organized."}
-            ]
-        }]
-        }' 2> /dev/null > temp_response.json
+        --data-binary @"$payload_file" \
+        2> /dev/null > temp_response.json
     
     # Extract the markdown content and save to file
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
@@ -75,7 +88,7 @@ convert_image_inline() {
     fi
     
     # Clean up
-    rm -f temp_response.json
+    rm -f temp_response.json "$payload_file"
 }
 
 # Function to convert Image using File API (for larger files)
@@ -114,7 +127,7 @@ convert_image_file_api() {
     log INFO "File uploaded with URI: $file_uri"
     
     # Generate content using that file
-    curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
+    curl "${BASE_URL}/models/gemini-3-flash-preview:generateContent?key=$GOOGLE_GENAI_API_KEY" \
         -H 'Content-Type: application/json' \
         -X POST \
         -d '{
