@@ -70,7 +70,7 @@ function Convert-ImageInline {
 
     try {
         # Make the API call
-        $response = Invoke-RestMethod -Uri "$BASE_URL/models/gemini-2.5-flash:generateContent?key=$env:GOOGLE_GENAI_API_KEY" `
+        $response = Invoke-RestMethod -Uri "$BASE_URL/models/gemini-3-flash-preview:generateContent?key=$env:GOOGLE_GENAI_API_KEY" `
             -Method Post `
             -ContentType "application/json" `
             -Body $requestBody
@@ -165,7 +165,7 @@ function Convert-ImageFileApi {
             )
         } | ConvertTo-Json -Depth 10
 
-        $response = Invoke-RestMethod -Uri "$BASE_URL/models/gemini-2.5-flash:generateContent?key=$env:GOOGLE_GENAI_API_KEY" `
+        $response = Invoke-RestMethod -Uri "$BASE_URL/models/gemini-3-flash-preview:generateContent?key=$env:GOOGLE_GENAI_API_KEY" `
             -Method Post `
             -ContentType "application/json" `
             -Body $generateBody
