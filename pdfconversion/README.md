@@ -104,6 +104,7 @@ The scripts will:
 3. **Choose conversion method** based on file size:
    - **Small files** (<15MB): Uses inline base64 encoding
    - **Large files** (≥15MB): Uses Google File API for upload
+   - **Gemini PDF limit**: PDFs still need to stay at or below 50MB per document
 
 4. **Convert** each PDF to markdown with:
    - Proper heading structure (# ## ###)
@@ -123,7 +124,8 @@ The scripts will:
 ## API Limits
 
 - **Free tier**: 15 requests per minute, 1 million tokens per minute
-- **File API**: Stores files for 48 hours, up to 50MB per file
+- **File API**: Stores uploaded files for 48 hours
+- **PDF understanding**: Gemini currently accepts PDFs up to 50MB per document
 - **Rate limiting**: Script includes 2-second delays between requests
 
 ## Troubleshooting
@@ -141,8 +143,9 @@ The scripts will:
    - Consider upgrading to a paid Google Cloud plan for higher limits
 
 4. **Large file failures**
-   - Files over 20MB might need the File API method
-   - Adjust the size threshold in the script if needed
+   - Files over 15MB automatically use the File API path
+   - PDFs over 50MB are rejected by Gemini with a generic `INVALID_ARGUMENT` error
+   - Split or compress oversized PDFs before conversion
 
 ### Manual Conversion
 

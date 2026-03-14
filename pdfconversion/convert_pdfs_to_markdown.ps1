@@ -21,6 +21,40 @@ if (-not $env:GOOGLE_GENAI_API_KEY) {
 
 # Base URL for Gemini API
 $BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+$UPLOAD_BASE_URL = "https://generativelanguage.googleapis.com/upload/v1beta"
+$MODEL_NAME = if ($env:PDF_MD_MODEL_NAME) { $env:PDF_MD_MODEL_NAME } else { "gemini-2.5-flash" }
+$GEMINI_PDF_MAX_BYTES = 50MB
+$FILE_API_POLL_INTERVAL_SECONDS = 2
+$FILE_API_MAX_POLL_ATTEMPTS = 30
+$PDF_CONVERSION_PROMPT = "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings, lists, code blocks if any, and emphasis. Make sure the output is readable and well-organized."
+
+function Wait-UploadedFileActive {
+    param([string]$FileName)
+
+    for ($attempt = 0; $attempt -le $FILE_API_MAX_POLL_ATTEMPTS; $attempt++) {
+        $fileMetadata = Invoke-RestMethod -Uri "$BASE_URL/$FileName?key=$($env:GOOGLE_GENAI_API_KEY)" `
+            -Method Get `
+            -ContentType "application/json"
+
+        $state = $fileMetadata.file.state
+
+        if ($state -eq "ACTIVE") {
+            return $fileMetadata.file
+        }
+
+        if ($state -eq "FAILED") {
+            $errorJson = $fileMetadata.file.error | ConvertTo-Json -Depth 5 -Compress
+            throw "Uploaded file processing failed for '$FileName': $errorJson"
+        }
+
+        if ($attempt -eq $FILE_API_MAX_POLL_ATTEMPTS) {
+            throw "Timed out waiting for uploaded file '$FileName' to become ACTIVE"
+        }
+
+        Write-Log "Waiting for uploaded file to become ACTIVE (attempt $($attempt + 1)/$FILE_API_MAX_POLL_ATTEMPTS)..." -Level INFO
+        Start-Sleep -Seconds $FILE_API_POLL_INTERVAL_SECONDS
+    }
+}
 
 # Function to convert PDF to markdown using inline data (for smaller files)
 function Convert-PdfInline {
@@ -35,9 +69,6 @@ function Convert-PdfInline {
     $pdfBytes = [System.IO.File]::ReadAllBytes($PdfPath)
     $encodedPdf = [System.Convert]::ToBase64String($pdfBytes)
 
-    # Create the prompt text (escaped properly)
-    $promptText = "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings, lists, code blocks if any, and emphasis. Make sure the output is readable and well-organized."
-
     # Prepare the request body
     $requestBody = @{
         contents = @(
@@ -50,7 +81,7 @@ function Convert-PdfInline {
                         }
                     },
                     @{
-                        text = $promptText
+                        text = $PDF_CONVERSION_PROMPT
                     }
                 )
             }
@@ -59,7 +90,7 @@ function Convert-PdfInline {
 
     try {
         # Make the API call
-        $response = Invoke-RestMethod -Uri "$BASE_URL/models/gemini-2.5-flash:generateContent?key=$env:GOOGLE_GENAI_API_KEY" `
+        $response = Invoke-RestMethod -Uri "$BASE_URL/models/$($MODEL_NAME):generateContent?key=$($env:GOOGLE_GENAI_API_KEY)" `
             -Method Post `
             -ContentType "application/json" `
             -Body $requestBody
@@ -92,6 +123,11 @@ function Convert-PdfFileApi {
     $fileInfo = Get-Item $PdfPath
     $numBytes = $fileInfo.Length
 
+    if ($numBytes -gt $GEMINI_PDF_MAX_BYTES) {
+        Write-Log "Skipping '$PdfPath': Gemini PDF support is limited to 50 MB per document; file is $numBytes bytes" -Level ERROR
+        return
+    }
+
     try {
         # Step 1: Initial resumable request
         $uploadHeaders = @{
@@ -108,13 +144,17 @@ function Convert-PdfFileApi {
             }
         } | ConvertTo-Json -Depth 5
 
-        $uploadResponse = Invoke-WebRequest -Uri "https://generativelanguage.googleapis.com/upload/v1beta/files?key=$env:GOOGLE_GENAI_API_KEY" `
+        $uploadResponse = Invoke-WebRequest -Uri "$UPLOAD_BASE_URL/files?key=$($env:GOOGLE_GENAI_API_KEY)" `
             -Method Post `
             -Headers $uploadHeaders `
             -Body $uploadBody
 
         # Extract upload URL from response headers
         $uploadUrl = $uploadResponse.Headers["x-goog-upload-url"]
+
+        if (-not $uploadUrl) {
+            throw "Failed to obtain resumable upload URL for '$PdfPath'"
+        }
 
         # Step 2: Upload the actual file
         $fileBytes = [System.IO.File]::ReadAllBytes($PdfPath)
@@ -130,10 +170,16 @@ function Convert-PdfFileApi {
             -Body $fileBytes
 
         $fileUri = $fileResponse.file.uri
+        $fileName = $fileResponse.file.name
+
+        if (-not $fileUri -or -not $fileName) {
+            throw "File API upload for '$PdfPath' did not return the expected file metadata"
+        }
+
         Write-Log "File uploaded with URI: $fileUri" -Level INFO
 
-        # Create the prompt text (escaped properly)
-        $promptText = "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings, lists, code blocks if any, and emphasis. Make sure the output is readable and well-organized."
+        $activeFile = Wait-UploadedFileActive -FileName $fileName
+        $fileUri = $activeFile.uri
 
         # Step 3: Generate content using the uploaded file
         $generateBody = @{
@@ -141,7 +187,7 @@ function Convert-PdfFileApi {
                 @{
                     parts = @(
                         @{
-                            text = $promptText
+                            text = $PDF_CONVERSION_PROMPT
                         },
                         @{
                             file_data = @{
@@ -154,7 +200,7 @@ function Convert-PdfFileApi {
             )
         } | ConvertTo-Json -Depth 10
 
-        $response = Invoke-RestMethod -Uri "$BASE_URL/models/gemini-2.5-flash:generateContent?key=$env:GOOGLE_GENAI_API_KEY" `
+        $response = Invoke-RestMethod -Uri "$BASE_URL/models/$($MODEL_NAME):generateContent?key=$($env:GOOGLE_GENAI_API_KEY)" `
             -Method Post `
             -ContentType "application/json" `
             -Body $generateBody

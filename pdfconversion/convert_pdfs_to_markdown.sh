@@ -22,6 +22,54 @@ fi
 # Base URLs for Gemini API
 BASE_URL="https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta"
+MODEL_NAME="${PDF_MD_MODEL_NAME:-gemini-2.5-flash}"
+GEMINI_PDF_MAX_BYTES=$((50 * 1024 * 1024))
+FILE_API_POLL_INTERVAL_SECONDS="${FILE_API_POLL_INTERVAL_SECONDS:-2}"
+FILE_API_MAX_POLL_ATTEMPTS="${FILE_API_MAX_POLL_ATTEMPTS:-30}"
+PDF_CONVERSION_PROMPT="Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."
+
+wait_for_uploaded_file_active() {
+    local file_name="$1"
+    local metadata_path="$2"
+    local attempt=0
+    local state error_message
+
+    while true; do
+        state=$(jq -r '.file.state // "STATE_UNSPECIFIED"' "$metadata_path")
+
+        case "$state" in
+            ACTIVE)
+                return 0
+                ;;
+            FAILED)
+                error_message=$(jq -c '.file.error // {}' "$metadata_path")
+                log ERROR "Uploaded file processing failed for '${file_name}': ${error_message}"
+                return 1
+                ;;
+            PROCESSING|STATE_UNSPECIFIED|"")
+                if [ "$attempt" -ge "$FILE_API_MAX_POLL_ATTEMPTS" ]; then
+                    log ERROR "Timed out waiting for uploaded file '${file_name}' to become ACTIVE"
+                    return 1
+                fi
+
+                attempt=$((attempt + 1))
+                log INFO "Waiting for uploaded file to become ACTIVE (attempt ${attempt}/${FILE_API_MAX_POLL_ATTEMPTS})..."
+                sleep "$FILE_API_POLL_INTERVAL_SECONDS"
+
+                if ! curl -fsS "${BASE_URL}/${file_name}?key=${GOOGLE_GENAI_API_KEY}" \
+                    -H 'Content-Type: application/json' \
+                    > "$metadata_path"; then
+                    log ERROR "Failed to fetch status for uploaded file '${file_name}'"
+                    return 1
+                fi
+                ;;
+            *)
+                log WARN "Uploaded file '${file_name}' returned unexpected state '${state}'"
+                return 1
+                ;;
+        esac
+    done
+}
 
 # Function to convert PDF to markdown using inline data (for smaller files)
 convert_pdf_inline() {
@@ -29,9 +77,8 @@ convert_pdf_inline() {
     local output_path="$2"
     local display_name=$(basename "$pdf_path")
     display_name="${display_name%.*}"
-    local payload_file prompt_text
+    local payload_file
     payload_file=$(mktemp "${SCRIPT_DIR}/payload.XXXXXX.json")
-    prompt_text="Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."
     
     log INFO "Converting $pdf_path to markdown using inline method..."
     
@@ -49,7 +96,7 @@ convert_pdf_inline() {
     fi
     
     if ! "${base64_cmd[@]}" | "${newline_filter[@]}" \
-        | jq -Rs --arg prompt "$prompt_text" '{
+        | jq -Rs --arg prompt "$PDF_CONVERSION_PROMPT" '{
             contents: [{
                 parts: [
                     { inline_data: { mime_type: "application/pdf", data: . } },
@@ -63,7 +110,7 @@ convert_pdf_inline() {
     fi
     
     # Generate content using the base64 encoded PDF
-    curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
+    curl "${BASE_URL}/models/${MODEL_NAME}:generateContent?key=$GOOGLE_GENAI_API_KEY" \
         -H 'Content-Type: application/json' \
         -X POST \
         --data-binary @"$payload_file" \
@@ -88,46 +135,106 @@ convert_pdf_file_api() {
     local output_path="$2"
     local display_name=$(basename "$pdf_path")
     display_name="${display_name%.*}"
+    local num_bytes tmp_header_file file_info_file payload_file upload_url file_name file_uri upload_metadata
     
     log INFO "Converting $pdf_path to markdown using File API..."
     
-    NUM_BYTES=$(wc -c < "$pdf_path")
-    tmp_header_file=upload-header.tmp
+    num_bytes=$(get_file_size "$pdf_path")
+
+    if [ "$num_bytes" -gt "$GEMINI_PDF_MAX_BYTES" ]; then
+        log ERROR "Skipping '$pdf_path': Gemini PDF support is limited to 50 MB per document; file is ${num_bytes} bytes"
+        return 1
+    fi
+
+    tmp_header_file=$(mktemp "${SCRIPT_DIR}/upload-header.XXXXXX.tmp")
+    file_info_file=$(mktemp "${SCRIPT_DIR}/file-info.XXXXXX.json")
+    payload_file=$(mktemp "${SCRIPT_DIR}/payload.XXXXXX.json")
+    upload_metadata=$(jq -nc --arg display_name "$display_name" '{file: {display_name: $display_name}}')
     
     # Initial resumable request defining metadata
-    curl "${UPLOAD_BASE_URL}/files?key=${GOOGLE_GENAI_API_KEY}" \
-    -D upload-header.tmp \
-    -H "X-Goog-Upload-Protocol: resumable" \
-    -H "X-Goog-Upload-Command: start" \
-    -H "X-Goog-Upload-Header-Content-Length: ${NUM_BYTES}" \
-    -H "X-Goog-Upload-Header-Content-Type: application/pdf" \
-    -H "Content-Type: application/json" \
-    -d "{\"file\": {\"display_name\": \"${display_name}\"}}" 2> /dev/null
+    if ! curl -fsS "${UPLOAD_BASE_URL}/files?key=${GOOGLE_GENAI_API_KEY}" \
+        -D "$tmp_header_file" \
+        -H "X-Goog-Upload-Protocol: resumable" \
+        -H "X-Goog-Upload-Command: start" \
+        -H "X-Goog-Upload-Header-Content-Length: ${num_bytes}" \
+        -H "X-Goog-Upload-Header-Content-Type: application/pdf" \
+        -H "Content-Type: application/json" \
+        --data-binary "$upload_metadata" \
+        > /dev/null; then
+        log ERROR "Failed to start File API upload for '$pdf_path'"
+        rm -f "$tmp_header_file" "$file_info_file" "$payload_file"
+        return 1
+    fi
     
     upload_url=$(grep -i "x-goog-upload-url: " "${tmp_header_file}" | cut -d" " -f2 | tr -d "\r")
-    rm "${tmp_header_file}"
+    rm -f "${tmp_header_file}"
+
+    if [ -z "$upload_url" ]; then
+        log ERROR "Failed to obtain resumable upload URL for '$pdf_path'"
+        rm -f "$file_info_file" "$payload_file"
+        return 1
+    fi
     
     # Upload the actual bytes
-    curl "${upload_url}" \
-    -H "Content-Length: ${NUM_BYTES}" \
-    -H "X-Goog-Upload-Offset: 0" \
-    -H "X-Goog-Upload-Command: upload, finalize" \
-    --data-binary "@${pdf_path}" 2> /dev/null > file_info.json
+    if ! curl -fsS "${upload_url}" \
+        -H "Content-Length: ${num_bytes}" \
+        -H "X-Goog-Upload-Offset: 0" \
+        -H "X-Goog-Upload-Command: upload, finalize" \
+        --data-binary "@${pdf_path}" \
+        > "$file_info_file"; then
+        log ERROR "Failed to upload '$pdf_path' with File API"
+        rm -f "$file_info_file" "$payload_file"
+        return 1
+    fi
     
-    file_uri=$(jq -r ".file.uri" file_info.json)
+    file_name=$(jq -r '.file.name // empty' "$file_info_file")
+    file_uri=$(jq -r '.file.uri // empty' "$file_info_file")
+
+    if [ -z "$file_name" ] || [ -z "$file_uri" ]; then
+        log ERROR "File API upload for '$pdf_path' did not return the expected file metadata"
+        log DEBUG "Upload response: $(cat "$file_info_file")"
+        rm -f "$file_info_file" "$payload_file"
+        return 1
+    fi
+
     log INFO "File uploaded with URI: $file_uri"
+
+    if ! wait_for_uploaded_file_active "$file_name" "$file_info_file"; then
+        log DEBUG "Latest file metadata: $(cat "$file_info_file")"
+        rm -f "$file_info_file" "$payload_file"
+        return 1
+    fi
+
+    file_uri=$(jq -r '.file.uri // empty' "$file_info_file")
+    if [ -z "$file_uri" ]; then
+        log ERROR "Uploaded file '${file_name}' became ACTIVE without a usable URI"
+        log DEBUG "Latest file metadata: $(cat "$file_info_file")"
+        rm -f "$file_info_file" "$payload_file"
+        return 1
+    fi
     
     # Generate content using the uploaded file
-    curl "${BASE_URL}/models/gemini-2.5-flash:generateContent?key=$GOOGLE_GENAI_API_KEY" \
+    if ! jq -n \
+        --arg prompt "$PDF_CONVERSION_PROMPT" \
+        --arg file_uri "$file_uri" \
+        '{
+            contents: [{
+                parts: [
+                    { text: $prompt },
+                    { file_data: { mime_type: "application/pdf", file_uri: $file_uri } }
+                ]
+            }]
+        }' > "$payload_file"; then
+        log ERROR "Failed to build File API prompt payload for '$pdf_path'"
+        rm -f "$file_info_file" "$payload_file"
+        return 1
+    fi
+
+    curl "${BASE_URL}/models/${MODEL_NAME}:generateContent?key=$GOOGLE_GENAI_API_KEY" \
         -H 'Content-Type: application/json' \
         -X POST \
-        -d '{
-        "contents": [{
-            "parts":[
-            {"text": "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."},
-            {"file_data":{"mime_type": "application/pdf", "file_uri": "'$file_uri'"}}]
-            }]
-        }' 2> /dev/null > temp_response.json
+        --data-binary @"$payload_file" \
+        2> /dev/null > temp_response.json
     
     # Extract and save the markdown content
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
@@ -139,7 +246,7 @@ convert_pdf_file_api() {
     fi
     
     # Clean up
-    rm -f temp_response.json file_info.json
+    rm -f temp_response.json "$file_info_file" "$payload_file"
 }
 
 # Function to check if markdown file already exists

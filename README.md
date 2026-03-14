@@ -90,6 +90,7 @@ bash ./pdfconversion/convert_pdfs_to_markdown.sh /path/to/pdf-or-folder
 Notes
 - If arguments are directories, scripts recurse to find supported files.
 - Inline vs. File API is chosen by size threshold; you can override via env vars above.
+- Gemini PDF conversion is limited to source PDFs of 50 MB or less; larger PDFs must be split or compressed first.
 - Logs are written to per-tool `logs/*.log` and are echoed to the console with colors.
 
 ---
@@ -110,5 +111,5 @@ Bash
 - API key errors: ensure `GOOGLE_GENAI_API_KEY` is exported/set in the current shell.
 - Rate limiting: scripts add a small delay between items; consider increasing if needed.
 - Large files: the File API path is used automatically when size exceeds the inline threshold.
-
+- Oversized PDFs: Gemini rejects PDFs larger than 50 MB with a generic `INVALID_ARGUMENT` response.
 
