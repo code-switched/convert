@@ -120,13 +120,14 @@ convert_pdf_inline() {
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
         jq -r '.candidates[0].content.parts[0].text' temp_response.json > "$output_path"
         log INFO "Successfully converted '$pdf_path' to '$output_path'"
+        rm -f temp_response.json "$payload_file"
+        return 0
     else
         log ERROR "Failed to convert '$pdf_path'"
         log DEBUG "API Response: $(cat temp_response.json)"
+        rm -f temp_response.json "$payload_file"
+        return 1
     fi
-    
-    # Clean up
-    rm -f temp_response.json "$payload_file"
 }
 
 # Function to convert PDF using File API (for larger files)
@@ -240,13 +241,14 @@ convert_pdf_file_api() {
     if jq -e '.candidates[0].content.parts[0].text' temp_response.json > /dev/null 2>&1; then
         jq -r '.candidates[0].content.parts[0].text' temp_response.json > "$output_path"
         log INFO "Successfully converted '$pdf_path' to '$output_path'"
+        rm -f temp_response.json "$file_info_file" "$payload_file"
+        return 0
     else
         log ERROR "Failed to convert '$pdf_path'"
         log DEBUG "API Response: $(cat temp_response.json)"
+        rm -f temp_response.json "$file_info_file" "$payload_file"
+        return 1
     fi
-    
-    # Clean up
-    rm -f temp_response.json "$file_info_file" "$payload_file"
 }
 
 # Function to check if markdown file already exists
@@ -270,11 +272,12 @@ get_file_size() {
 convert_pdf() {
     local pdf_path="$1"
     local md_path="${pdf_path%.pdf}.md"
+    local file_size max_inline_size conversion_status
     
     # Check if markdown already exists
     if has_markdown_equivalent "$pdf_path"; then
         log WARN "SKIPPING: $pdf_path - markdown file already exists"
-        return
+        return 0
     fi
     
     # Check file size to determine method
@@ -288,15 +291,21 @@ convert_pdf() {
         max_inline_size=$((15 * 1024 * 1024))
     fi
     log DEBUG "File size: ${file_size} bytes; inline threshold: ${max_inline_size} bytes"
-    
-    if [ "$file_size" -lt "$max_inline_size" ]; then
+
+    if [ "$file_size" -gt "$GEMINI_PDF_MAX_BYTES" ]; then
+        log ERROR "Skipping '$pdf_path': Gemini PDF support is limited to 50 MB per document; split or compress this PDF before conversion"
+        conversion_status=1
+    elif [ "$file_size" -lt "$max_inline_size" ]; then
         convert_pdf_inline "$pdf_path" "$md_path"
+        conversion_status=$?
     else
         convert_pdf_file_api "$pdf_path" "$md_path"
+        conversion_status=$?
     fi
     
     # Add a small delay to avoid rate limiting
     sleep 2
+    return "$conversion_status"
 }
 
 # Function to process a directory

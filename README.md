@@ -112,4 +112,3 @@ Bash
 - Rate limiting: scripts add a small delay between items; consider increasing if needed.
 - Large files: the File API path is used automatically when size exceeds the inline threshold.
 - Oversized PDFs: Gemini rejects PDFs larger than 50 MB with a generic `INVALID_ARGUMENT` response.
-

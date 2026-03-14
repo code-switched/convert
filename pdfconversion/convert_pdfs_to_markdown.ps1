@@ -100,13 +100,16 @@ function Convert-PdfInline {
             $markdownContent = $response.candidates[0].content.parts[0].text
             [System.IO.File]::WriteAllText($OutputPath, $markdownContent, [System.Text.Encoding]::UTF8)
             Write-Log "Successfully converted '$PdfPath' to '$OutputPath'" -Level INFO
+            return $true
         } else {
             Write-Log "Failed to convert '$PdfPath'" -Level ERROR
             Write-Log "API Response: $($response | ConvertTo-Json -Depth 5)" -Level DEBUG
+            return $false
         }
     }
     catch {
         Write-Log "Error converting '$PdfPath': $_" -Level ERROR
+        return $false
     }
 }
 
@@ -210,13 +213,16 @@ function Convert-PdfFileApi {
             $markdownContent = $response.candidates[0].content.parts[0].text
             [System.IO.File]::WriteAllText($OutputPath, $markdownContent, [System.Text.Encoding]::UTF8)
             Write-Log "Successfully converted '$PdfPath' to '$OutputPath'" -Level INFO
+            return $true
         } else {
             Write-Log "Failed to convert '$PdfPath'" -Level ERROR
             Write-Log "API Response: $($response | ConvertTo-Json -Depth 5)" -Level DEBUG
+            return $false
         }
     }
     catch {
         Write-Log "Error converting '$PdfPath': $_" -Level ERROR
+        return $false
     }
 }
 
@@ -233,25 +239,31 @@ function Convert-Pdf {
     param([string]$PdfPath)
 
     $mdPath = $PdfPath -replace '\.pdf$', '.md'
+    $conversionSucceeded = $false
 
     # Check if markdown already exists
     if (Test-MarkdownExists $PdfPath) {
         Write-Log "SKIPPING: $PdfPath - markdown file already exists" -Level WARN
-        return
+        return $true
     }
 
     # Check file size to determine method (15MB threshold)
     $fileInfo = Get-Item $PdfPath
     $maxInlineSize = 15 * 1024 * 1024  # 15MB
 
-    if ($fileInfo.Length -lt $maxInlineSize) {
-        Convert-PdfInline -PdfPath $PdfPath -OutputPath $mdPath
+    if ($fileInfo.Length -gt $GEMINI_PDF_MAX_BYTES) {
+        Write-Log "Skipping '$PdfPath': Gemini PDF support is limited to 50 MB per document; split or compress this PDF before conversion" -Level ERROR
+        $conversionSucceeded = $false
+    }
+    elseif ($fileInfo.Length -lt $maxInlineSize) {
+        $conversionSucceeded = Convert-PdfInline -PdfPath $PdfPath -OutputPath $mdPath
     } else {
-        Convert-PdfFileApi -PdfPath $PdfPath -OutputPath $mdPath
+        $conversionSucceeded = Convert-PdfFileApi -PdfPath $PdfPath -OutputPath $mdPath
     }
 
     # Add delay to avoid rate limiting
     Start-Sleep -Seconds 2
+    return $conversionSucceeded
 }
 
 # Function to convert a directory
@@ -260,7 +272,7 @@ function Convert-Directory {
     
     Write-Log "Processing directory: $DirPath" -Level INFO
     Get-ChildItem "$DirPath\*.pdf" -Recurse | ForEach-Object {
-        Convert-Pdf -PdfPath $_.FullName
+        $null = Convert-Pdf -PdfPath $_.FullName
     }
 }
 
@@ -277,7 +289,7 @@ if ($Paths) {
             }
             elseif ($item.Extension -eq '.pdf') {
                 # If path is a PDF file, process it
-                Convert-Pdf -PdfPath $item.FullName
+                $null = Convert-Pdf -PdfPath $item.FullName
             }
             else {
                 Write-Log "SKIPPING: $path - not a PDF file or directory" -Level WARN
