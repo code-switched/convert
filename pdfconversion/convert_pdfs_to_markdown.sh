@@ -24,8 +24,8 @@ BASE_URL="https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta"
 MODEL_NAME="${PDF_MD_MODEL_NAME:-gemini-2.5-flash}"
 GEMINI_PDF_MAX_BYTES=$((50 * 1024 * 1024))
-FILE_API_POLL_INTERVAL_SECONDS="${FILE_API_POLL_INTERVAL_SECONDS:-2}"
-FILE_API_MAX_POLL_ATTEMPTS="${FILE_API_MAX_POLL_ATTEMPTS:-30}"
+FILE_API_POLL_INTERVAL_SECONDS="${PDF_MD_FILE_API_POLL_INTERVAL_SECONDS:-${FILE_API_POLL_INTERVAL_SECONDS:-2}}"
+FILE_API_MAX_POLL_ATTEMPTS="${PDF_MD_FILE_API_MAX_POLL_ATTEMPTS:-${FILE_API_MAX_POLL_ATTEMPTS:-90}}"
 PDF_CONVERSION_PROMPT="Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings (# ## ###), lists (- or 1.), code blocks if any, and emphasis (*italic* or **bold**). Make sure the output is readable and well-organized."
 
 wait_for_uploaded_file_active() {
@@ -136,7 +136,7 @@ convert_pdf_file_api() {
     local output_path="$2"
     local display_name=$(basename "$pdf_path")
     display_name="${display_name%.*}"
-    local num_bytes tmp_header_file file_info_file payload_file upload_url file_name file_uri upload_metadata
+    local num_bytes tmp_header_file file_info_file payload_file upload_url file_name file_uri file_state upload_metadata
     
     log INFO "Converting $pdf_path to markdown using File API..."
     
@@ -200,10 +200,13 @@ convert_pdf_file_api() {
 
     log INFO "File uploaded with URI: $file_uri"
 
-    if ! wait_for_uploaded_file_active "$file_name" "$file_info_file"; then
-        log DEBUG "Latest file metadata: $(cat "$file_info_file")"
-        rm -f "$file_info_file" "$payload_file"
-        return 1
+    file_state=$(jq -r '.file.state // empty' "$file_info_file")
+    if [ "$file_state" != "ACTIVE" ]; then
+        if ! wait_for_uploaded_file_active "$file_name" "$file_info_file"; then
+            log DEBUG "Latest file metadata: $(cat "$file_info_file")"
+            rm -f "$file_info_file" "$payload_file"
+            return 1
+        fi
     fi
 
     file_uri=$(jq -r '.file.uri // empty' "$file_info_file")

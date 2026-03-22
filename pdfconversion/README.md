@@ -1,6 +1,6 @@
 # PDF to Markdown Converter
 
-This directory contains scripts to convert PDF files to markdown format using Google's Gemini 2.5 Pro API.
+This directory contains scripts to convert PDF files to markdown format using Google's Gemini 2.5 Flash API.
 
 ## Prerequisites
 
@@ -145,6 +145,7 @@ The scripts will:
 4. **Large file failures**
    - Files over 15MB automatically use the File API path
    - PDFs over 50MB are rejected by Gemini with a generic `INVALID_ARGUMENT` error
+   - Slow-to-process uploads can need a longer poll window; set `PDF_MD_FILE_API_MAX_POLL_ATTEMPTS=180` before running if a large PDF times out waiting to become `ACTIVE`
    - Split or compress oversized PDFs before conversion
 
 ### Manual Conversion
@@ -164,7 +165,7 @@ PDF_PATH="path/to/your/file.pdf"
 
 ## Output Quality
 
-Gemini 2.5 Pro is excellent at:
+Gemini 2.5 Flash is excellent at:
 
 - Preserving document structure and hierarchy
 - Converting tables to markdown format
