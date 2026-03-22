@@ -25,14 +25,14 @@ $UPLOAD_BASE_URL = "https://generativelanguage.googleapis.com/upload/v1beta"
 $MODEL_NAME = if ($env:PDF_MD_MODEL_NAME) { $env:PDF_MD_MODEL_NAME } else { "gemini-2.5-flash" }
 $GEMINI_PDF_MAX_BYTES = 50MB
 $FILE_API_POLL_INTERVAL_SECONDS = 2
-$FILE_API_MAX_POLL_ATTEMPTS = 30
+$FILE_API_MAX_POLL_ATTEMPTS = if ($env:PDF_MD_FILE_API_MAX_POLL_ATTEMPTS) { [int]$env:PDF_MD_FILE_API_MAX_POLL_ATTEMPTS } else { 90 }
 $PDF_CONVERSION_PROMPT = "Please convert this PDF document to clean, well-formatted markdown. Preserve all important information, structure, headings, lists, and formatting. Use appropriate markdown syntax for headings, lists, code blocks if any, and emphasis. Make sure the output is readable and well-organized."
 
 function Wait-UploadedFileActive {
     param([string]$FileName)
 
     for ($attempt = 0; $attempt -le $FILE_API_MAX_POLL_ATTEMPTS; $attempt++) {
-        $fileMetadata = Invoke-RestMethod -Uri "$BASE_URL/$FileName?key=$($env:GOOGLE_GENAI_API_KEY)" `
+        $fileMetadata = Invoke-RestMethod -Uri "$BASE_URL/$($FileName)?key=$($env:GOOGLE_GENAI_API_KEY)" `
             -Method Get `
             -ContentType "application/json"
 
@@ -147,7 +147,7 @@ function Convert-PdfFileApi {
             }
         } | ConvertTo-Json -Depth 5
 
-        $uploadResponse = Invoke-WebRequest -Uri "$UPLOAD_BASE_URL/files?key=$($env:GOOGLE_GENAI_API_KEY)" `
+        $uploadResponse = Invoke-WebRequest -UseBasicParsing -Uri "$UPLOAD_BASE_URL/files?key=$($env:GOOGLE_GENAI_API_KEY)" `
             -Method Post `
             -Headers $uploadHeaders `
             -Body $uploadBody
@@ -174,6 +174,7 @@ function Convert-PdfFileApi {
 
         $fileUri = $fileResponse.file.uri
         $fileName = $fileResponse.file.name
+        $fileState = $fileResponse.file.state
 
         if (-not $fileUri -or -not $fileName) {
             throw "File API upload for '$PdfPath' did not return the expected file metadata"
@@ -181,7 +182,13 @@ function Convert-PdfFileApi {
 
         Write-Log "File uploaded with URI: $fileUri" -Level INFO
 
-        $activeFile = Wait-UploadedFileActive -FileName $fileName
+        if ($fileState -eq "ACTIVE") {
+            $activeFile = $fileResponse.file
+        }
+        else {
+            $activeFile = Wait-UploadedFileActive -FileName $fileName
+        }
+
         $fileUri = $activeFile.uri
 
         # Step 3: Generate content using the uploaded file
