@@ -67,6 +67,72 @@ function Initialize-Logging {
     }
 }
 
+function Initialize-HttpDefaults {
+    # PowerShell 5.1/.NET Framework can fail POSTs to Google APIs unless
+    # modern TLS is enabled and Expect: 100-continue is disabled.
+    [System.Net.ServicePointManager]::Expect100Continue = $false
+
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        $securityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+
+        if (-not ($securityProtocol -band [System.Net.SecurityProtocolType]::Tls12)) {
+            [System.Net.ServicePointManager]::SecurityProtocol = $securityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+        }
+    }
+}
+
+function Get-HttpStatusCodeFromException {
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Exception]$Exception
+    )
+
+    if ($Exception.Response -and $Exception.Response.StatusCode) {
+        return [int]$Exception.Response.StatusCode
+    }
+
+    return $null
+}
+
+function Invoke-WithHttpRetry {
+    param(
+        [Parameter(Mandatory=$true)]
+        [scriptblock]$Action,
+
+        [Parameter(Mandatory=$true)]
+        [string]$OperationName,
+
+        [Parameter()]
+        [int]$MaxAttempts = 4,
+
+        [Parameter()]
+        [int]$InitialDelaySeconds = 2
+    )
+
+    $attempt = 1
+    $delaySeconds = $InitialDelaySeconds
+
+    while ($true) {
+        try {
+            return & $Action
+        }
+        catch {
+            $statusCode = Get-HttpStatusCodeFromException -Exception $_.Exception
+            $isTransient = $statusCode -in @(408, 425, 429, 500, 502, 503, 504)
+
+            if (-not $isTransient -or $attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            Write-Log "$OperationName failed with HTTP $statusCode. Retrying in $delaySeconds second(s) (attempt $($attempt + 1)/$MaxAttempts)." -Level WARN
+            Start-Sleep -Seconds $delaySeconds
+
+            $attempt++
+            $delaySeconds = [Math]::Min($delaySeconds * 2, 30)
+        }
+    }
+}
+
 function Write-Log {
     param (
         [Parameter(Mandatory=$true)]
@@ -107,4 +173,4 @@ function Write-Log {
 }
 
 # Export the functions to make them available when the module is imported
-Export-ModuleMember -Function Initialize-Logging, Write-Log
+Export-ModuleMember -Function Initialize-Logging, Initialize-HttpDefaults, Invoke-WithHttpRetry, Write-Log

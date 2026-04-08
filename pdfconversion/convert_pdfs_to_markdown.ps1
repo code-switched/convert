@@ -11,6 +11,7 @@ Import-Module (Join-Path $moduleDir "Write-Log.psm1") -Force
 
 # Initialize logging
 Initialize-Logging $PSCommandPath
+Initialize-HttpDefaults
 
 # Check if GOOGLE_GENAI_API_KEY environment variable is set
 if (-not $env:GOOGLE_GENAI_API_KEY) {
@@ -32,9 +33,11 @@ function Wait-UploadedFileActive {
     param([string]$FileName)
 
     for ($attempt = 0; $attempt -le $FILE_API_MAX_POLL_ATTEMPTS; $attempt++) {
-        $fileMetadata = Invoke-RestMethod -Uri "$BASE_URL/$($FileName)?key=$($env:GOOGLE_GENAI_API_KEY)" `
-            -Method Get `
-            -ContentType "application/json"
+        $fileMetadata = Invoke-WithHttpRetry -OperationName "Poll uploaded PDF '$FileName'" -Action {
+            Invoke-RestMethod -Uri "$BASE_URL/$($FileName)?key=$($env:GOOGLE_GENAI_API_KEY)" `
+                -Method Get `
+                -ContentType "application/json"
+        }
 
         $state = $fileMetadata.file.state
 
@@ -90,10 +93,12 @@ function Convert-PdfInline {
 
     try {
         # Make the API call
-        $response = Invoke-RestMethod -Uri "$BASE_URL/models/$($MODEL_NAME):generateContent?key=$($env:GOOGLE_GENAI_API_KEY)" `
-            -Method Post `
-            -ContentType "application/json" `
-            -Body $requestBody
+        $response = Invoke-WithHttpRetry -OperationName "Generate PDF markdown for '$PdfPath'" -Action {
+            Invoke-RestMethod -Uri "$BASE_URL/models/$($MODEL_NAME):generateContent?key=$($env:GOOGLE_GENAI_API_KEY)" `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body $requestBody
+        }
 
         # Extract and save the markdown content
         if ($response.candidates -and $response.candidates[0].content.parts -and $response.candidates[0].content.parts[0].text) {
@@ -147,10 +152,12 @@ function Convert-PdfFileApi {
             }
         } | ConvertTo-Json -Depth 5
 
-        $uploadResponse = Invoke-WebRequest -UseBasicParsing -Uri "$UPLOAD_BASE_URL/files?key=$($env:GOOGLE_GENAI_API_KEY)" `
-            -Method Post `
-            -Headers $uploadHeaders `
-            -Body $uploadBody
+        $uploadResponse = Invoke-WithHttpRetry -OperationName "Start PDF upload for '$PdfPath'" -Action {
+            Invoke-WebRequest -UseBasicParsing -Uri "$UPLOAD_BASE_URL/files?key=$($env:GOOGLE_GENAI_API_KEY)" `
+                -Method Post `
+                -Headers $uploadHeaders `
+                -Body $uploadBody
+        }
 
         # Extract upload URL from response headers
         $uploadUrl = $uploadResponse.Headers["x-goog-upload-url"]
@@ -167,10 +174,12 @@ function Convert-PdfFileApi {
             "X-Goog-Upload-Command" = "upload, finalize"
         }
 
-        $fileResponse = Invoke-RestMethod -Uri $uploadUrl `
-            -Method Post `
-            -Headers $uploadFileHeaders `
-            -Body $fileBytes
+        $fileResponse = Invoke-WithHttpRetry -OperationName "Upload PDF bytes for '$PdfPath'" -Action {
+            Invoke-RestMethod -Uri $uploadUrl `
+                -Method Post `
+                -Headers $uploadFileHeaders `
+                -Body $fileBytes
+        }
 
         $fileUri = $fileResponse.file.uri
         $fileName = $fileResponse.file.name
@@ -210,10 +219,12 @@ function Convert-PdfFileApi {
             )
         } | ConvertTo-Json -Depth 10
 
-        $response = Invoke-RestMethod -Uri "$BASE_URL/models/$($MODEL_NAME):generateContent?key=$($env:GOOGLE_GENAI_API_KEY)" `
-            -Method Post `
-            -ContentType "application/json" `
-            -Body $generateBody
+        $response = Invoke-WithHttpRetry -OperationName "Generate PDF markdown for '$PdfPath' from File API" -Action {
+            Invoke-RestMethod -Uri "$BASE_URL/models/$($MODEL_NAME):generateContent?key=$($env:GOOGLE_GENAI_API_KEY)" `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body $generateBody
+        }
 
         # Extract and save the markdown content
         if ($response.candidates -and $response.candidates[0].content.parts -and $response.candidates[0].content.parts[0].text) {
